@@ -3,8 +3,14 @@ import pandas as pd
 import json
 from pathlib import Path
 from io import BytesIO
-from reportlab.lib.pagesizes import A4
-from reportlab.pdfgen import canvas
+
+# PDF dependencies
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.units import cm
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+
 
 # -------------- CONFIGURATION --------------
 st.set_page_config(page_title="📚 Boekenbeheer", layout="wide")
@@ -12,31 +18,11 @@ st.set_page_config(page_title="📚 Boekenbeheer", layout="wide")
 FILE_DEFAULT = Path("Boeken_Map.xlsx")
 SETTINGS_FILE = Path("settings.json")
 
-# -------------- SETTINGS FUNCTIONS --------------
-def load_settings():
-    if SETTINGS_FILE.exists():
-        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    else:
-        default = {"data_source": "local", "data_path": "Boeken_Map.xlsx", "remote_url": ""}
-        with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(default, f, indent=2)
-        return default
-
-def save_settings(settings):
-    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
-        json.dump(settings, f, indent=2)
-
 # -------------- DATA HANDLING --------------
 @st.cache_data
 def load_excel():
-    settings = load_settings()
     try:
-        if settings["data_source"] == "remote" and settings["remote_url"]:
-            st.info(f"📡 Data geladen van: {settings['remote_url']}")
-            df = pd.read_excel(settings["remote_url"])
-        else:
-            df = pd.read_excel(Path(settings["data_path"]))
+        df = pd.read_excel(FILE_DEFAULT, sheet_name="Boeken lijst")
     except Exception as e:
         st.error(f"❌ Fout bij het laden van gegevens: {e}")
         st.stop()
@@ -44,7 +30,6 @@ def load_excel():
 
 def save_excel(df):
     """Save updated data back to Excel, clean text, and clear Streamlit cache."""
-    # --- Clean and normalize text ---
     df = df.apply(lambda x: x.str.strip().replace(r"\s+", " ", regex=True))
     for c in df.columns:
         if "locatie" in c:
@@ -56,19 +41,13 @@ def save_excel(df):
         if "titel" in c or "schrijver" in c or "auteur" in c:
             df[c] = df[c].str.strip().str.replace(r"\s+", " ", regex=True)
 
-    settings = load_settings()
-    if settings["data_source"] == "remote":
-        st.warning("💾 Online opslag niet ondersteund — alleen lokaal opslaan is mogelijk.")
-        return
-
-    # --- Write back to Excel locally ---
     sheets = pd.read_excel(FILE_DEFAULT, sheet_name=None)
     sheets["Boeken lijst"] = df
     with pd.ExcelWriter(FILE_DEFAULT, engine="openpyxl") as writer:
         for name, data in sheets.items():
             data.to_excel(writer, sheet_name=name, index=False)
 
-    load_excel.clear()  # 🧠 clear cache
+    load_excel.clear()
     st.success("✅ Gegevens succesvol opgeslagen!")
 
 def delete_book(df, index):
@@ -79,11 +58,54 @@ def delete_book(df, index):
     st.success("🗑️ Boek verwijderd!")
     st.rerun()
 
+def generate_pdf_table(dataframe, title):
+    """Generate a clean, formatted PDF from a dataframe."""
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=landscape(A4),
+        leftMargin=1.5 * cm,
+        rightMargin=1.5 * cm,
+        topMargin=1.5 * cm,
+        bottomMargin=1.5 * cm,
+    )
+    elements = []
+    styles = getSampleStyleSheet()
+
+    # Title
+    title_paragraph = Paragraph(f"<b>Boekenlijst — {title}</b>", styles["Title"])
+    elements.append(title_paragraph)
+    elements.append(Spacer(1, 0.4 * cm))
+
+    data = [list(dataframe.columns)] + dataframe.values.tolist()
+
+    table = Table(data, repeatRows=1)
+    table.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4F81BD")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 9),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+                ("BACKGROUND", (0, 1), (-1, -1), colors.whitesmoke),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+            ]
+        )
+    )
+
+    elements.append(table)
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+
 # -------------- LOAD DATA --------------
 df = load_excel()
 
 # Clean columns
-df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+df = df.loc[:, ~df.columns.str.contains("^Unnamed")]
 df.columns = df.columns.str.strip().str.lower()
 df = df.astype(str)
 
@@ -101,22 +123,21 @@ for c in df.columns:
     if "categorie" in c:
         col_map["categorie"] = c
 
+
 # -------------- SIDEBAR NAVIGATION --------------
 st.sidebar.title("📖 Boekenbeheer")
-page = st.sidebar.radio(
-    "Menu",
-    ["🔍 Zoek / Filter / Bewerk", "➕ Nieuw boek", "🖨️ Print / Exporteer", "⚙️ Instellingen"]
-)
+page = st.sidebar.radio("Menu", ["🔍 Zoek / Filter / Bewerk", "➕ Nieuw boek"])
 
 st.title("📘 Boeken Lijst")
 
+
 # ============================================================
-# 🔍 PAGE 1 — SEARCH / FILTER / EDIT
+# 🔍 PAGE 1 — SEARCH / FILTER / EDIT + PDF Export
 # ============================================================
 if page == "🔍 Zoek / Filter / Bewerk":
-    st.subheader("Zoek, filter en bewerk boeken")
+    st.subheader("Zoek, filter, bewerk of exporteer boeken")
 
-    # --- Quick Stats ---
+    # Quick Stats
     total_books = len(df)
     unique_lang = df[col_map["taal"]].nunique() if "taal" in col_map else 0
     unique_cats = df[col_map["categorie"]].nunique() if "categorie" in col_map else 0
@@ -130,7 +151,7 @@ if page == "🔍 Zoek / Filter / Bewerk":
 
     st.divider()
 
-    # --- Search & Filters ---
+    # Search & Filters
     col1, col2, col3 = st.columns(3)
     with col1:
         query = st.text_input("🔍 Zoek op titel of schrijver:")
@@ -143,9 +164,7 @@ if page == "🔍 Zoek / Filter / Bewerk":
         loc_opts = ["Alle"] + sorted(df[loc_col].dropna().unique().tolist()) if loc_col else []
         locatie_filter = st.selectbox("📍 Filter op locatie:", loc_opts) if loc_opts else None
 
-    if st.button("🔄 Reset filters"):
-        st.experimental_rerun()
-
+    # Apply filters
     results = df.copy()
     if query:
         query = query.strip()
@@ -159,6 +178,17 @@ if page == "🔍 Zoek / Filter / Bewerk":
     st.write("### 📋 Zoekresultaten")
     st.caption("Vink een boek aan om te bewerken")
 
+    # --- PDF Export of filtered data ---
+    if not results.empty:
+        pdf_file = generate_pdf_table(results, "Huidige selectie")
+        st.download_button(
+            label="📄 Exporteer huidige resultaten naar PDF",
+            data=pdf_file,
+            file_name="Boekenlijst_filtered.pdf",
+            mime="application/pdf",
+        )
+
+    # Display results + editing
     if results.empty:
         st.warning("Geen resultaten gevonden. Pas je filters aan.")
     else:
@@ -186,7 +216,7 @@ if page == "🔍 Zoek / Filter / Bewerk":
                 row = df.loc[idx].copy()
 
                 st.divider()
-                st.write(f"✏️ **Bewerk geselecteerd boek:**")
+                st.write("✏️ **Bewerk geselecteerd boek:**")
 
                 edited = {}
                 for col in df.columns:
@@ -224,7 +254,7 @@ if page == "🔍 Zoek / Filter / Bewerk":
 
 
 # ============================================================
-# ➕ PAGE 2 — ADD NEW BOOK
+# ➕ PAGE 2 — ADD NEW BOOK (fields reset after submit)
 # ============================================================
 elif page == "➕ Nieuw boek":
     st.subheader("Nieuw boek toevoegen")
@@ -237,34 +267,46 @@ elif page == "➕ Nieuw boek":
     genre_opts = sorted(df[genre_col].dropna().unique().tolist()) if genre_col else []
     locatie_opts = sorted(df[locatie_col].dropna().unique().tolist()) if locatie_col else []
 
-    new_entry = {}
+    # Use a form to isolate the inputs
+    with st.form("add_book_form", clear_on_submit=True):
+        new_entry = {}
 
-    for col in df.columns:
-        col_lower = col.lower()
+        for col in df.columns:
+            col_lower = col.lower()
 
-        if taal_col and col_lower == taal_col:
-            use_new_taal = st.checkbox("➕ Nieuwe taal toevoegen?")
-            new_entry[col] = st.text_input("🌐 Nieuwe taal:") if use_new_taal else st.selectbox("🌐 Kies taal:", taal_opts)
+            if taal_col and col_lower == taal_col:
+                use_new_taal = st.checkbox("➕ Nieuwe taal toevoegen?")
+                new_entry[col] = (
+                    st.text_input("🌐 Nieuwe taal:") if use_new_taal else st.selectbox("🌐 Kies taal:", taal_opts)
+                )
 
-        elif genre_col and col_lower == genre_col:
-            use_new_genre = st.checkbox("➕ Nieuwe categorie toevoegen?")
-            new_entry[col] = st.text_input("🏷️ Nieuwe categorie:") if use_new_genre else st.selectbox("🏷️ Kies categorie:", genre_opts)
+            elif genre_col and col_lower == genre_col:
+                use_new_genre = st.checkbox("➕ Nieuwe categorie toevoegen?")
+                new_entry[col] = (
+                    st.text_input("🏷️ Nieuwe categorie:") if use_new_genre else st.selectbox("🏷️ Kies categorie:", genre_opts)
+                )
 
-        elif locatie_col and col_lower == locatie_col:
-            use_new_loc = st.checkbox("➕ Nieuwe locatie toevoegen?")
-            new_entry[col] = st.text_input("📍 Nieuwe locatie:") if use_new_loc else st.selectbox("📍 Kies locatie:", locatie_opts)
+            elif locatie_col and col_lower == locatie_col:
+                use_new_loc = st.checkbox("➕ Nieuwe locatie toevoegen?")
+                new_entry[col] = (
+                    st.text_input("📍 Nieuwe locatie:") if use_new_loc else st.selectbox("📍 Kies locatie:", locatie_opts)
+                )
 
-        else:
-            new_entry[col] = st.text_input(col.capitalize())
+            else:
+                new_entry[col] = st.text_input(col.capitalize())
 
-    titel_col = col_map.get("titel", "titel")
-    if titel_col in df.columns and new_entry.get(titel_col):
-        title_matches = df[df[titel_col].str.lower() == new_entry[titel_col].lower()]
-        if not title_matches.empty:
-            st.warning("⚠️ Er bestaan al boeken met een vergelijkbare titel:")
-            st.dataframe(title_matches, width="stretch")
+        titel_col = col_map.get("titel", "titel")
+        if titel_col in df.columns and new_entry.get(titel_col):
+            title_matches = df[df[titel_col].str.lower() == new_entry[titel_col].lower()]
+            if not title_matches.empty:
+                st.warning("⚠️ Er bestaan al boeken met een vergelijkbare titel:")
+                st.dataframe(title_matches, width="stretch")
 
-    if st.button("📚 Toevoegen aan lijst"):
+        # --- Submit button inside the form ---
+        submitted = st.form_submit_button("📚 Toevoegen aan lijst")
+
+    # --- Handle submission after form closes ---
+    if submitted:
         if titel_col in df.columns and new_entry.get(titel_col):
             title_matches = df[df[titel_col].str.lower() == new_entry[titel_col].lower()]
             if not title_matches.empty:
@@ -274,121 +316,7 @@ elif page == "➕ Nieuw boek":
         df = pd.concat([df, pd.DataFrame([new_entry])], ignore_index=True)
         save_excel(df)
         st.success("✅ Nieuw boek toegevoegd!")
-        st.rerun()
 
-
-# ============================================================
-# 🖨️ PAGE 3 — PRINT / EXPORT
-# ============================================================
-elif page == "🖨️ Print / Exporteer":
-    st.subheader("🖨️ Print of Exporteer per Categorie")
-
-    genre_col = col_map.get("categorie")
-    if not genre_col:
-        st.error("Categorie kolom niet gevonden in de data.")
-        st.stop()
-
-    # --- Select category ---
-    genre_list = sorted(df[genre_col].dropna().unique().tolist())
-    selected_genre = st.selectbox("🏷️ Kies een categorie:", genre_list)
-
-    # --- Filter data ---
-    filtered = df[df[genre_col] == selected_genre]
-
-    if filtered.empty:
-        st.warning("Geen boeken gevonden voor deze categorie.")
-        st.stop()
-
-    st.write(f"### 📚 Boeken in categorie: **{selected_genre}**")
-    st.dataframe(filtered, width="stretch", use_container_width=False)
-
-    st.info("Gebruik 'Ctrl + P' of 'Cmd + P' in je browser om direct af te drukken.")
-
-        # --- PDF Export Option ---
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4, landscape
-    from reportlab.lib.units import cm
-    from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-    from reportlab.lib.styles import getSampleStyleSheet
-
-    def generate_pdf_table(dataframe, genre):
-        """Generate a clean, formatted PDF with a table of all books in a category."""
-        buffer = BytesIO()
-        doc = SimpleDocTemplate(
-            buffer,
-            pagesize=landscape(A4),
-            leftMargin=1.5*cm, rightMargin=1.5*cm,
-            topMargin=1.5*cm, bottomMargin=1.5*cm
-        )
-        elements = []
-        styles = getSampleStyleSheet()
-
-        # --- Title ---
-        title = Paragraph(f"<b>Boekenlijst — {genre}</b>", styles["Title"])
-        elements.append(title)
-        elements.append(Spacer(1, 0.4*cm))
-
-        # --- Prepare data for table ---
-        data = [list(dataframe.columns)] + dataframe.values.tolist()
-
-        # --- Create table ---
-        table = Table(data, repeatRows=1)
-
-        # --- Styling ---
-        table.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4F81BD")),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 9),
-            ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
-            ("BACKGROUND", (0, 1), (-1, -1), colors.whitesmoke),
-            ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
-        ]))
-
-        elements.append(table)
-
-        # --- Build PDF ---
-        doc.build(elements)
-        buffer.seek(0)
-        return buffer
-
-    pdf_file = generate_pdf_table(filtered, selected_genre)
-
-    st.download_button(
-        label="📄 Download als PDF (Tabelweergave)",
-        data=pdf_file,
-        file_name=f"Boekenlijst_{selected_genre}.pdf",
-        mime="application/pdf",
-    )
-
-
-# ============================================================
-# ⚙️ PAGE 4 — SETTINGS
-# ============================================================
-elif page == "⚙️ Instellingen":
-    st.subheader("⚙️ Gegevensbron Instellen")
-
-    settings = load_settings()
-    source = st.radio(
-        "Kies gegevensbron:",
-        ["📁 Lokaal bestand", "🌐 Online (Google Drive / Dropbox link)"],
-        index=0 if settings["data_source"] == "local" else 1
-    )
-
-    if source.startswith("📁"):
-        settings["data_source"] = "local"
-        settings["data_path"] = st.text_input("Bestandspad:", settings.get("data_path", "Boeken_Map.xlsx"))
-    else:
-        settings["data_source"] = "remote"
-        settings["remote_url"] = st.text_input(
-            "Voer Excel-URL in (bijv. Google Drive directe link):",
-            settings.get("remote_url", "")
-        )
-
-    if st.button("💾 Opslaan instellingen"):
-        save_settings(settings)
-        st.success("✅ Instellingen opgeslagen! Herstart de app om ze toe te passen.")
 
 st.divider()
 st.caption("© 2025 Boekenbeheer App — gemaakt voor oma ❤️")
