@@ -32,7 +32,7 @@ def load_sheet():
     return df
 
 def save_to_sheet(df):
-    """Save the DataFrame back to Google Sheets."""
+    """Save the DataFrame back to Google Sheets and refresh cache."""
     credentials = service_account.Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
         scopes=["https://www.googleapis.com/auth/spreadsheets"],
@@ -44,6 +44,8 @@ def save_to_sheet(df):
     sheet.clear()
     # update with new data
     sheet.update([df.columns.values.tolist()] + df.values.tolist())
+
+    load_sheet.clear()  # ✅ clear cache right here
     st.success("✅ Gegevens opgeslagen in Google Sheets!")
 
 # -------------- CONFIGURATION --------------
@@ -83,6 +85,7 @@ def save_excel(df):
 
     load_sheet.clear()
     st.success("✅ Gegevens succesvol opgeslagen!")
+    st.rerun()
 
 def delete_book(df, index):
     """Delete a book at the given index and update Excel."""
