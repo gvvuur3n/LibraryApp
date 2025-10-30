@@ -11,6 +11,40 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
+import gspread
+from google.oauth2 import service_account
+
+# --- Google Sheets Setup ---
+SHEET_NAME = "Boeken_Map"
+SPREADSHEET_ID = "1RqKZ9Ge8qR0tpE77C3whCDhARkheVrwBQ96CHmLtqeY"  # <-- from the Google Sheets URL
+
+@st.cache_data(ttl=60)
+def load_sheet():
+    """Load data from Google Sheets into a DataFrame."""
+    credentials = service_account.Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    client = gspread.authorize(credentials)
+    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+    data = sheet.get_all_records()
+    df = pd.DataFrame(data)
+    return df
+
+def save_to_sheet(df):
+    """Save the DataFrame back to Google Sheets."""
+    credentials = service_account.Credentials.from_service_account_info(
+        st.secrets["gcp_service_account"],
+        scopes=["https://www.googleapis.com/auth/spreadsheets"],
+    )
+    client = gspread.authorize(credentials)
+    sheet = client.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
+    
+    # clear existing content
+    sheet.clear()
+    # update with new data
+    sheet.update([df.columns.values.tolist()] + df.values.tolist())
+    st.success("✅ Gegevens opgeslagen in Google Sheets!")
 
 # -------------- CONFIGURATION --------------
 st.set_page_config(page_title="📚 Boekenbeheer", layout="wide")
@@ -47,14 +81,14 @@ def save_excel(df):
         for name, data in sheets.items():
             data.to_excel(writer, sheet_name=name, index=False)
 
-    load_excel.clear()
+    load_sheet.clear()
     st.success("✅ Gegevens succesvol opgeslagen!")
 
 def delete_book(df, index):
     """Delete a book at the given index and update Excel."""
     df = df.drop(index)
     df.reset_index(drop=True, inplace=True)
-    save_excel(df)
+    save_to_sheet(df)
     st.success("🗑️ Boek verwijderd!")
     st.rerun()
 
@@ -102,7 +136,7 @@ def generate_pdf_table(dataframe, title):
 
 
 # -------------- LOAD DATA --------------
-df = load_excel()
+df = load_sheet()
 
 # Clean columns
 df = df.loc[:, ~df.columns.str.contains("^Unnamed")]
@@ -239,7 +273,7 @@ if page == "🔍 Zoek / Filter / Bewerk":
                     if st.button("💾 Opslaan wijzigingen"):
                         for col in df.columns:
                             df.at[idx, col] = edited[col]
-                        save_excel(df)
+                        save_to_sheet(df)
                         st.success(f"✅ Boek '{df.at[idx, titel_col]}' is opgeslagen!")
                         st.rerun()
 
@@ -314,7 +348,7 @@ elif page == "➕ Nieuw boek":
                 st.stop()
 
         df = pd.concat([df, pd.DataFrame([new_entry])], ignore_index=True)
-        save_excel(df)
+        save_to_sheet(df)
         st.success("✅ Nieuw boek toegevoegd!")
 
 
